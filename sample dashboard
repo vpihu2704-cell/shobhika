@@ -1,0 +1,345 @@
+API
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import sqlite3
+import datetime
+
+app = Flask(__name__)
+CORS(app)
+
+def init_db():
+    conn = sqlite3.connect("iot_data.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sensor_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            temperature REAL,
+            humidity REAL,
+            pressure REAL,
+            altitude REAL,
+            gas REAL,
+            distance REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("Database ready!")
+
+@app.route("/API/UploadData", methods=["POST"])
+def upload_data():
+    data = request.json
+    conn = sqlite3.connect("iot_data.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO sensor_data (timestamp, temperature, humidity, pressure, altitude, gas, distance)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        data.get("temperature", 0),
+        data.get("humidity", 0),
+        data.get("pressure", 0),
+        data.get("altitude", 0),
+        data.get("gas", 0),
+        data.get("distance", 0)
+    ))
+    conn.commit()
+    conn.close()
+    print(f"Data saved: {data}")
+    return jsonify({"Response": "Success", "Message": "Data saved!"})
+
+@app.route("/API/GetData", methods=["GET"])
+def get_data():
+    conn = sqlite3.connect("iot_data.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT timestamp, temperature, humidity, pressure, altitude, gas, distance
+        FROM sensor_data
+        ORDER BY id DESC LIMIT 20
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        result.append({
+            "timestamp": row[0],
+            "temperature": row[1],
+            "humidity": row[2],
+            "pressure": row[3],
+            "altitude": row[4],
+            "gas": row[5],
+            "distance": row[6]
+        })
+    return jsonify(result)
+
+if __name__ == "__main__":
+    init_db()
+    print("API running at http://127.0.0.1:5000")
+    app.run(debug=False, port=5000)
+
+
+    DASHBOARD
+    import dash
+from dash import dcc, html, Input, Output
+import plotly.graph_objs as go
+import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+SENDER_EMAIL = "vpihu2704@gmail.com"
+RECEIVER_EMAIL = "vpihu2704@gmail.com"
+APP_PASSWORD = "rinc xlmu mfia obfd"
+
+email_sent = {"temperature": False, "humidity": False, "pressure": False,
+              "altitude": False, "gas": False, "distance": False}
+
+def send_email(sensor, value, level):
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = RECEIVER_EMAIL
+        msg["Subject"] = f"IoT Alert - {sensor.upper()} {level}!"
+        body = f"""
+ALERT from Revol IoT Dashboard!
+Sensor  : {sensor.upper()}
+Level   : {level}
+Value   : {value}
+Please check your sensor immediately!
+        """
+        msg.attach(MIMEText(body, "plain"))
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, APP_PASSWORD)
+        server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+        server.quit()
+        print(f"Email sent for {sensor} {level}!")
+    except Exception as e:
+        print(f"Email error: {e}")
+
+app = dash.Dash(__name__)
+
+app.layout = html.Div(style={"backgroundColor": "#111", "padding": "20px"}, children=[
+    html.H1("Revol IoT Monitoring Dashboard",
+            style={"color": "white", "textAlign": "center"}),
+    html.Div(id="alert-banner", style={"textAlign": "center", "marginBottom": "20px"}),
+    html.Div(id="current-values", style={"textAlign": "center", "color": "white",
+                                          "fontSize": "18px", "marginBottom": "20px"}),
+    # Gauges Row 1
+    html.Div([
+        dcc.Graph(id="temp-gauge", style={"width": "33%", "display": "inline-block"}),
+        dcc.Graph(id="hum-gauge", style={"width": "33%", "display": "inline-block"}),
+        dcc.Graph(id="pres-gauge", style={"width": "33%", "display": "inline-block"}),
+    ]),
+    # Gauges Row 2
+    html.Div([
+        dcc.Graph(id="alt-gauge", style={"width": "33%", "display": "inline-block"}),
+        dcc.Graph(id="gas-gauge", style={"width": "33%", "display": "inline-block"}),
+        dcc.Graph(id="dist-gauge", style={"width": "33%", "display": "inline-block"}),
+    ]),
+    # Charts Row 1
+    html.Div([
+        dcc.Graph(id="temp-chart", style={"width": "50%", "display": "inline-block"}),
+        dcc.Graph(id="hum-chart", style={"width": "50%", "display": "inline-block"}),
+    ]),
+    # Charts Row 2
+    html.Div([
+        dcc.Graph(id="pres-chart", style={"width": "50%", "display": "inline-block"}),
+        dcc.Graph(id="alt-chart", style={"width": "50%", "display": "inline-block"}),
+    ]),
+    # Charts Row 3
+    html.Div([
+        dcc.Graph(id="gas-chart", style={"width": "50%", "display": "inline-block"}),
+        dcc.Graph(id="dist-chart", style={"width": "50%", "display": "inline-block"}),
+    ]),
+    dcc.Interval(id="interval", interval=3000, n_intervals=0)
+])
+
+def make_gauge(title, value, min_val, max_val, warning, danger):
+    color = "green"
+    if value > danger:
+        color = "red"
+    elif value > warning:
+        color = "orange"
+    return go.Figure(
+        data=[go.Indicator(
+            mode="gauge+number",
+            value=value,
+            title={"text": title, "font": {"color": "white"}},
+            gauge={
+                "axis": {"range": [min_val, max_val]},
+                "bar": {"color": color},
+                "steps": [
+                    {"range": [min_val, warning], "color": "#1a1a1a"},
+                    {"range": [warning, danger], "color": "#3d2b00"},
+                    {"range": [danger, max_val], "color": "#3d0000"},
+                ]
+            }
+        )],
+        layout=go.Layout(
+            paper_bgcolor="#111",
+            font={"color": "white"},
+            height=250
+        )
+    )
+
+def make_chart(title, times, values, color):
+    return go.Figure(
+        data=[go.Scatter(
+            x=times, y=values,
+            mode="lines+markers",
+            line={"color": color, "width": 2},
+            marker={"size": 10},
+            name=title
+        )],
+        layout=go.Layout(
+            title=title,
+            paper_bgcolor="#111",
+            plot_bgcolor="#222",
+            font={"color": "white"},
+            xaxis={"title": "Time"},
+            yaxis={"title": title},
+            height=250
+        )
+    )
+
+@app.callback(
+    Output("temp-gauge", "figure"),
+    Output("hum-gauge", "figure"),
+    Output("pres-gauge", "figure"),
+    Output("alt-gauge", "figure"),
+    Output("gas-gauge", "figure"),
+    Output("dist-gauge", "figure"),
+    Output("temp-chart", "figure"),
+    Output("hum-chart", "figure"),
+    Output("pres-chart", "figure"),
+    Output("alt-chart", "figure"),
+    Output("gas-chart", "figure"),
+    Output("dist-chart", "figure"),
+    Output("current-values", "children"),
+    Output("alert-banner", "children"),
+    Input("interval", "n_intervals")
+)
+def update_dashboard(n):
+    print(f"Triggered! n={n}")
+    try:
+        r = requests.get("http://127.0.0.1:5000/API/GetData", timeout=5)
+        data = r.json()
+        print(f"Records: {len(data)}")
+    except Exception as e:
+        print(f"ERROR: {e}")
+        data = []
+
+    if not data:
+        empty = go.Figure()
+        return (empty,)*12 + ("No data yet...", "")
+
+    last2 = data[:2]
+    times = [d["timestamp"] for d in reversed(last2)]
+    temps = [d["temperature"] for d in reversed(last2)]
+    hums = [d["humidity"] for d in reversed(last2)]
+    press = [d["pressure"] for d in reversed(last2)]
+    alts = [d["altitude"] for d in reversed(last2)]
+    gases = [d["gas"] for d in reversed(last2)]
+    dists = [d["distance"] for d in reversed(last2)]
+
+    latest = data[0]
+    temp = latest.get("temperature", 0)
+    hum = latest.get("humidity", 0)
+    pres = latest.get("pressure", 0)
+    alt = latest.get("altitude", 0)
+    gas = latest.get("gas", 0)
+    dist = latest.get("distance", 0)
+
+    # Alerts
+    alerts = []
+    limits = {
+        "temperature": (35, 40),
+        "humidity": (70, 85),
+        "pressure": (1040, 1045),
+        "altitude": (100, 200),
+        "gas": (1000, 2000),
+        "distance": (20, 10)
+    }
+    values = {
+        "temperature": temp, "humidity": hum,
+        "pressure": pres, "altitude": alt,
+        "gas": gas, "distance": dist
+    }
+    for sensor, (warning, danger) in limits.items():
+        value = values[sensor]
+        if value > danger:
+            alerts.append(f"🔴 {sensor.upper()}: {value} — DANGER!")
+            if not email_sent[sensor]:
+                send_email(sensor, value, "DANGER")
+                email_sent[sensor] = True
+        elif value > warning:
+            alerts.append(f"⚠️ {sensor.upper()}: {value} — WARNING!")
+            if not email_sent[sensor]:
+                send_email(sensor, value, "WARNING")
+                email_sent[sensor] = True
+        else:
+            email_sent[sensor] = False
+
+    if alerts:
+        banner = html.Div([html.H3(a, style={"color": "red"}) for a in alerts])
+    else:
+        banner = html.H3("✅ All Sensors Normal", style={"color": "green"})
+
+    current_vals = html.Div([
+        html.Span(f"🌡️ Temp: {temp}°C  ", style={"color": "red"}),
+        html.Span(f"💧 Humidity: {hum}%  ", style={"color": "cyan"}),
+        html.Span(f"🔵 Pressure: {pres}hPa  ", style={"color": "lightgreen"}),
+        html.Span(f"🏔️ Altitude: {alt}m  ", style={"color": "white"}),
+        html.Span(f"💨 Gas: {gas}  ", style={"color": "orange"}),
+        html.Span(f"📡 Distance: {dist}cm", style={"color": "yellow"}),
+    ])
+
+    return (
+        make_gauge("Temperature °C", temp, 0, 50, 35, 40),
+        make_gauge("Humidity %", hum, 0, 100, 70, 85),
+        make_gauge("Pressure hPa", pres, 950, 1050, 1040, 1045),
+        make_gauge("Altitude m", alt, 0, 300, 100, 200),
+        make_gauge("Gas Level", gas, 0, 4095, 1000, 2000),
+        make_gauge("Distance cm", dist, 0, 100, 20, 10),
+        make_chart("Temperature °C", times, temps, "red"),
+        make_chart("Humidity %", times, hums, "cyan"),
+        make_chart("Pressure hPa", times, press, "lightgreen"),
+        make_chart("Altitude m", times, alts, "white"),
+        make_chart("Gas Level", times, gases, "orange"),
+        make_chart("Distance cm", times, dists, "yellow"),
+        current_vals,
+        banner
+    )
+
+if __name__ == "__main__":
+    print("Dashboard running at http://127.0.0.1:8050")
+    app.run(debug=False)
+
+SENSOR SIMULATOR
+import requests
+import random
+import time
+
+API_URL = "http://127.0.0.1:5000/API/UploadData"
+
+print("=== Revol IoT Sensor Simulator ===")
+print("Sending data to API every 5 seconds...")
+print("Press Ctrl+C to stop\n")
+
+while True:
+    data = {
+        "temperature": round(random.uniform(20, 45), 2),
+        "humidity": round(random.uniform(30, 90), 2),
+        "pressure": round(random.uniform(980, 1050), 2),
+        "current": round(random.uniform(4, 20), 2)
+    }
+    try:
+        response = requests.post(API_URL, json=data)
+        result = response.json()
+        print(f"Sent: {data}")
+        print(f"Response: {result}\n")
+    except Exception as e:
+        print(f"Error: {e}")
+
+    time.sleep(5)
