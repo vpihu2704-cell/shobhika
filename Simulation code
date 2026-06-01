@@ -1,0 +1,107 @@
+#include <Arduino.h>
+
+#define LOW_SENSOR 14
+#define HIGH_SENSOR 27
+
+#define MODE_BUTTON 32
+#define MANUAL_BUTTON 13
+
+#define RELAY_PIN 25
+
+#define STEP_PIN 26
+#define DIR_PIN 33
+
+bool motorRunning = false;
+bool autoMode = true;
+
+void setup() {
+
+    pinMode(LOW_SENSOR, INPUT_PULLUP);
+    pinMode(HIGH_SENSOR, INPUT_PULLUP);
+
+    pinMode(MODE_BUTTON, INPUT_PULLUP);
+    pinMode(MANUAL_BUTTON, INPUT_PULLUP);
+
+    pinMode(RELAY_PIN, OUTPUT);
+
+    pinMode(STEP_PIN, OUTPUT);
+    pinMode(DIR_PIN, OUTPUT);
+
+    digitalWrite(RELAY_PIN, LOW);
+
+    digitalWrite(DIR_PIN, HIGH);
+
+    Serial.begin(115200);
+
+    Serial.println("Smart Tank Controller Started");
+}
+
+void loop() {
+
+    // MODE BUTTON
+    if (digitalRead(MODE_BUTTON) == LOW) {
+
+        autoMode = !autoMode;
+
+        delay(300);
+
+        if (autoMode) {
+            Serial.println("AUTO MODE ENABLED");
+        } else {
+            Serial.println("MANUAL MODE ENABLED");
+        }
+    }
+
+    // AUTO MODE
+    if (autoMode) {
+
+        // LOW SENSOR
+        if (digitalRead(LOW_SENSOR) == LOW) {
+
+            digitalWrite(RELAY_PIN, HIGH);
+
+            motorRunning = true;
+
+            Serial.println("AUTO: Tank Low -> Motor ON");
+        }
+
+        // HIGH SENSOR
+        if (digitalRead(HIGH_SENSOR) == LOW) {
+
+            digitalWrite(RELAY_PIN, LOW);
+
+            motorRunning = false;
+
+            Serial.println("AUTO: Tank Full -> Motor OFF");
+        }
+    }
+
+    // MANUAL MODE
+    else {
+
+        if (digitalRead(MANUAL_BUTTON) == LOW) {
+
+            motorRunning = !motorRunning;
+
+            digitalWrite(RELAY_PIN, motorRunning);
+
+            if (motorRunning) {
+                Serial.println("MANUAL: Motor ON");
+            } else {
+                Serial.println("MANUAL: Motor OFF");
+            }
+
+            delay(300);
+        }
+    }
+
+    // MOTOR ROTATION
+    if (motorRunning) {
+
+        digitalWrite(STEP_PIN, HIGH);
+        delayMicroseconds(500);
+
+        digitalWrite(STEP_PIN, LOW);
+        delayMicroseconds(500);
+    }
+}
