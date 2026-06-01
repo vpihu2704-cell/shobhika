@@ -1,0 +1,151 @@
+#define BLYNK_TEMPLATE_ID   "TMPL3R9gDgtPn" 
+#define BLYNK_TEMPLATE_NAME "Hydrolink IOT Automation"
+#define BLYNK_AUTH_TOKEN    "h4CFyREsARff97VcNOXLUQUdU5zCGGE2" 
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleEsp32.h>
+
+// Hardware Pin Definitions
+#define LOW_SENSOR 14
+#define HIGH_SENSOR 27
+#define MODE_BUTTON 32
+#define MANUAL_BUTTON 13
+#define RELAY_PIN 25
+#define STEP_PIN 26
+#define DIR_PIN 33
+
+// Blynk Virtual Pin Mappings
+#define V_MOTOR_CONTROL 0  // Button Widget (Switch)
+#define V_WATER_LEVEL   1  // Gauge Widget
+#define V_AUTO_MODE     2  // Styled Button/Switch Widget
+#define V_TANK_STATUS   3  // Label/Text Widget
+#define V_MOTOR_STATUS  4  // Value/LED Display Widget
+#define V_MODE_LABEL    5  // Text Widget
+
+// System Variables
+bool motorRunning = false;
+bool autoMode = true;
+char ssid[] = "Wokwi-GUEST"; // Wokwi virtual internet router
+char pass[] = "";            // Open network, keep empty
+
+BlynkTimer timer;
+
+// Function to send data to Blynk app periodically
+void sendSystemStatusToBlynk() {
+  // Update simulated water level based on sensor states
+  if (digitalRead(HIGH_SENSOR) == LOW) {
+    Blynk.virtualWrite(V_WATER_LEVEL, 100);
+    Blynk.virtualWrite(V_TANK_STATUS, "Tank Full");
+  } else if (digitalRead(LOW_SENSOR) == LOW) {
+    Blynk.virtualWrite(V_WATER_LEVEL, 10);
+    Blynk.virtualWrite(V_TANK_STATUS, "Tank Empty");
+  } else {
+    Blynk.virtualWrite(V_WATER_LEVEL, 50);
+    Blynk.virtualWrite(V_TANK_STATUS, "Tank Normal");
+  }
+
+  // Push Mode states
+  Blynk.virtualWrite(V_AUTO_MODE, autoMode ? 1 : 0);
+  Blynk.virtualWrite(V_MODE_LABEL, autoMode ? "AUTO MODE" : "MANUAL MODE");
+
+  // Push Motor states
+  Blynk.virtualWrite(V_MOTOR_CONTROL, motorRunning ? 1 : 0);
+  Blynk.virtualWrite(V_MOTOR_STATUS, motorRunning ? 1 : 0);
+}
+
+// REMOTE CONTROL: Handle Manual Motor Control from Blynk App (V0 Switch)
+BLYNK_WRITE(V_MOTOR_CONTROL) {
+  if (!autoMode) { // Only allow manual remote toggling if Auto Mode is off
+    motorRunning = param.asInt();
+    digitalWrite(RELAY_PIN, motorRunning);
+    Serial.print("BLYNK REMOTE: Manual Motor -> ");
+    Serial.println(motorRunning ? "ON" : "OFF");
+  } else {
+    // If someone tries to force it during Auto Mode, push back the true state
+    Blynk.virtualWrite(V_MOTOR_CONTROL, motorRunning ? 1 : 0);
+  }
+}
+
+// REMOTE CONTROL: Toggle Auto/Manual Mode from Blynk App (V2 Switch)
+BLYNK_WRITE(V_AUTO_MODE) {
+  autoMode = param.asInt();
+  Serial.print("BLYNK REMOTE: System Mode -> ");
+  Serial.println(autoMode ? "AUTO" : "MANUAL");
+  sendSystemStatusToBlynk();
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Initializing Smart Tank Controller...");
+
+  pinMode(LOW_SENSOR, INPUT_PULLUP);
+  pinMode(HIGH_SENSOR, INPUT_PULLUP);
+  pinMode(MODE_BUTTON, INPUT_PULLUP);
+  pinMode(MANUAL_BUTTON, INPUT_PULLUP);
+
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+
+  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(DIR_PIN, HIGH);
+
+  // Initialize Blynk Connection via Wokwi's virtual gateway
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  // Setup a timer to update dashboard widgets every 1 second
+  timer.setInterval(1000L, sendSystemStatusToBlynk);
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+
+  // PHYSICAL HARDWARE INTERACTION LOOPS
+  
+  // 1. Physical Mode Button Press
+  if (digitalRead(MODE_BUTTON) == LOW) {
+    autoMode = !autoMode;
+    Serial.print("HARDWARE: Mode Button Pressed -> ");
+    Serial.println(autoMode ? "AUTO MODE" : "MANUAL MODE");
+    sendSystemStatusToBlynk();
+    delay(300); // Debounce
+  }
+
+  // 2. Automation Logic (Auto Mode)
+  if (autoMode) {
+    if (digitalRead(LOW_SENSOR) == LOW && !motorRunning) {
+      digitalWrite(RELAY_PIN, HIGH);
+      motorRunning = true;
+      Serial.println("AUTO STATE: Tank Low -> Motor Activated");
+      sendSystemStatusToBlynk();
+    }
+    if (digitalRead(HIGH_SENSOR) == LOW && motorRunning) {
+      digitalWrite(RELAY_PIN, LOW);
+      motorRunning = false;
+      Serial.println("AUTO STATE: Tank Full -> Motor Deactivated");
+      sendSystemStatusToBlynk();
+    }
+  } 
+  // 3. Manual Button Logic (Physical Manual Mode Switch)
+  else {
+    if (digitalRead(MANUAL_BUTTON) == LOW) {
+      motorRunning = !motorRunning;
+      digitalWrite(RELAY_PIN, motorRunning);
+      Serial.print("HARDWARE: Manual Toggle -> Motor ");
+      Serial.println(motorRunning ? "ON" : "OFF");
+      sendSystemStatusToBlynk();
+      delay(300); // Debounce
+    }
+  }
+
+  // 4. Actuator Execution Loop (Stepper motor simulation)
+  if (motorRunning) {
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(500);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(500);
+  }
+}
