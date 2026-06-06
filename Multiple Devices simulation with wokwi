@@ -1,0 +1,254 @@
+
+#include <DHT.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <ESP32Servo.h>
+
+#define PIN_DHT         4
+#define PIN_PIR         35
+#define PIN_BTN_LIGHT   13
+#define PIN_BTN_DOOR    14
+#define PIN_LED_LIGHT   32
+#define PIN_LED_FAN     26
+#define PIN_LED_ALARM   27
+#define PIN_LED_DOOR    25
+#define PIN_BUZZER      33
+#define PIN_SERVO       18
+
+#define TEMP_FAN_ON     30.0
+#define TEMP_FAN_OFF    27.0
+#define ALARM_DURATION  3000
+#define DOOR_OPEN_ANGLE  90
+#define DOOR_CLOSE_ANGLE  0
+#define DHT_READ_INTERVAL 2000
+#define LCD_UPDATE_INTERVAL 1000
+#define DEBOUNCE_MS     50
+
+DHT             dht(PIN_DHT, DHT22);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Servo           servoDoor;
+
+bool  lightON        = false;
+bool  fanON          = false;
+bool  alarmON        = false;
+bool  doorOpen       = false;
+bool  motionDetected = false;
+
+float temperature    = 0.0;
+float humidity       = 0.0;
+
+unsigned long lastDHTRead    = 0;
+unsigned long lastLCDUpdate  = 0;
+unsigned long alarmStartTime = 0;
+unsigned long lastBtnLight   = 0;
+unsigned long lastBtnDoor    = 0;
+bool lcdPage                 = false;
+unsigned long lastPageSwitch = 0;
+
+void setup() {
+    Serial.begin(115200);
+    Serial.println("=== Smart Home Automation ===");
+    Serial.println("Commands: L=light D=door F=fan A=alarm R=reset S=status");
+
+    pinMode(PIN_PIR,       INPUT);
+    pinMode(PIN_BTN_LIGHT, INPUT_PULLUP);
+    pinMode(PIN_BTN_DOOR,  INPUT_PULLUP);
+    pinMode(PIN_LED_LIGHT, OUTPUT);
+    pinMode(PIN_LED_FAN,   OUTPUT);
+    pinMode(PIN_LED_ALARM, OUTPUT);
+    pinMode(PIN_LED_DOOR,  OUTPUT);
+    pinMode(PIN_BUZZER,    OUTPUT);
+
+    digitalWrite(PIN_LED_LIGHT, LOW);
+    digitalWrite(PIN_LED_FAN,   LOW);
+    digitalWrite(PIN_LED_ALARM, LOW);
+    digitalWrite(PIN_LED_DOOR,  LOW);
+    digitalWrite(PIN_BUZZER,    LOW);
+
+    dht.begin();
+
+    lcd.init();
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.print("Smart Home v1.0");
+    lcd.setCursor(0, 1);
+    lcd.print("Initialising...");
+    delay(2000);
+    lcd.clear();
+
+    servoDoor.attach(PIN_SERVO);
+    servoDoor.write(DOOR_CLOSE_ANGLE);
+
+    Serial.println("System ready!");
+}
+
+void loop() {
+    unsigned long now = millis();
+
+    if (now - lastDHTRead >= DHT_READ_INTERVAL) {
+        lastDHTRead = now;
+        readDHT();
+    }
+
+    checkMotion();
+    checkButtons(now);
+    controlFan();
+
+    if (alarmON && (now - alarmStartTime >= ALARM_DURATION)) {
+        stopAlarm();
+    }
+
+    checkSerialCommands();
+
+    if (now - lastLCDUpdate >= LCD_UPDATE_INTERVAL) {
+        lastLCDUpdate = now;
+        if (now - lastPageSwitch >= 4000) {
+            lastPageSwitch = now;
+            lcdPage = !lcdPage;
+            lcd.clear();
+        }
+        updateLCD();
+    }
+}
+
+void readDHT() {
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+    if (isnan(t) || isnan(h)) {
+        Serial.println("[DHT] Read failed");
+        return;
+    }
+    temperature = t;
+    humidity    = h;
+    Serial.print("[DHT] Temp: ");
+    Serial.print(temperature, 1);
+    Serial.print("C  Humidity: ");
+    Serial.print(humidity, 1);
+    Serial.println("%");
+}
+
+void checkMotion() {
+    bool motionNow = digitalRead(PIN_PIR);
+    if (motionNow && !motionDetected) {
+        motionDetected = true;
+        Serial.println("[PIR] Motion detected!");
+        lightON = true;
+        digitalWrite(PIN_LED_LIGHT, HIGH);
+        triggerAlarm();
+    } else if (!motionNow && motionDetected) {
+        motionDetected = false;
+        Serial.println("[PIR] Motion cleared");
+    }
+}
+
+void checkButtons(unsigned long now) {
+    if (digitalRead(PIN_BTN_LIGHT) == LOW) {
+        if (now - lastBtnLight >= DEBOUNCE_MS) {
+            lastBtnLight = now;
+            lightON = !lightON;
+            digitalWrite(PIN_LED_LIGHT, lightON ? HIGH : LOW);
+            Serial.println("[BTN] Light " + String(lightON ? "ON" : "OFF"));
+        }
+    }
+    if (digitalRead(PIN_BTN_DOOR) == LOW) {
+        if (now - lastBtnDoor >= DEBOUNCE_MS) {
+            lastBtnDoor = now;
+            toggleDoor();
+        }
+    }
+}
+
+void controlFan() {
+    if (!fanON && temperature >= TEMP_FAN_ON) {
+        fanON = true;
+        digitalWrite(PIN_LED_FAN, HIGH);
+        Serial.println("[FAN] ON — Temp: " + String(temperature) + "C");
+    } else if (fanON && temperature <= TEMP_FAN_OFF) {
+        fanON = false;
+        digitalWrite(PIN_LED_FAN, LOW);
+        Serial.println("[FAN] OFF — Temp: " + String(temperature) + "C");
+    }
+}
+
+void toggleDoor() {
+    doorOpen = !doorOpen;
+    servoDoor.write(doorOpen ? DOOR_OPEN_ANGLE : DOOR_CLOSE_ANGLE);
+    digitalWrite(PIN_LED_DOOR, doorOpen ? HIGH : LOW);
+    Serial.println("[DOOR] " + String(doorOpen ? "OPEN" : "CLOSED"));
+}
+
+void triggerAlarm() {
+    if (!alarmON) {
+        alarmON = true;
+        alarmStartTime = millis();
+        digitalWrite(PIN_LED_ALARM, HIGH);
+        digitalWrite(PIN_BUZZER,    HIGH);
+        Serial.println("[ALARM] Triggered!");
+    }
+}
+
+void stopAlarm() {
+    alarmON = false;
+    digitalWrite(PIN_LED_ALARM, LOW);
+    digitalWrite(PIN_BUZZER,    LOW);
+    Serial.println("[ALARM] Stopped");
+}
+
+void checkSerialCommands() {
+    if (!Serial.available()) return;
+    char cmd = toupper(Serial.read());
+    switch (cmd) {
+        case 'L':
+            lightON = !lightON;
+            digitalWrite(PIN_LED_LIGHT, lightON ? HIGH : LOW);
+            Serial.println("[CMD] Light " + String(lightON ? "ON" : "OFF"));
+            break;
+        case 'D': toggleDoor(); break;
+        case 'R': stopAlarm(); break;
+        case 'F':
+            fanON = !fanON;
+            digitalWrite(PIN_LED_FAN, fanON ? HIGH : LOW);
+            Serial.println("[CMD] Fan " + String(fanON ? "ON" : "OFF"));
+            break;
+        case 'A': triggerAlarm(); break;
+        case 'S': printStatus(); break;
+    }
+}
+
+void printStatus() {
+    Serial.println("=== STATUS ===");
+    Serial.println("Temp    : " + String(temperature, 1) + "C");
+    Serial.println("Humidity: " + String(humidity, 1) + "%");
+    Serial.println("Light   : " + String(lightON  ? "ON" : "OFF"));
+    Serial.println("Fan     : " + String(fanON    ? "ON" : "OFF"));
+    Serial.println("Alarm   : " + String(alarmON  ? "ON" : "OFF"));
+    Serial.println("Door    : " + String(doorOpen ? "OPEN" : "CLOSED"));
+    Serial.println("Motion  : " + String(motionDetected ? "YES" : "NO"));
+}
+
+void updateLCD() {
+    if (!lcdPage) {
+        lcd.setCursor(0, 0);
+        lcd.print("T:");
+        lcd.print(temperature, 1);
+        lcd.print("C H:");
+        lcd.print(humidity, 0);
+        lcd.print("%   ");
+        lcd.setCursor(0, 1);
+        lcd.print("Fan:");
+        lcd.print(fanON ? "ON " : "OFF");
+        lcd.print(" Mot:");
+        lcd.print(motionDetected ? "YES" : "NO ");
+    } else {
+        lcd.setCursor(0, 0);
+        lcd.print("Lgt:");
+        lcd.print(lightON  ? "ON " : "OFF");
+        lcd.print(" Dr:");
+        lcd.print(doorOpen ? "OPN" : "CLS");
+        lcd.setCursor(0, 1);
+        lcd.print("Alm:");
+        lcd.print(alarmON  ? "ON " : "OFF");
+        lcd.print(" Fan:");
+        lcd.print(fanON    ? "ON " : "OFF");
+    }
+}
